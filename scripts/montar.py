@@ -82,6 +82,9 @@ def main(roteiro_path):
     perfil_arq = Path(r["perfil"]) if r.get("perfil") else SKILL / "perfis/mari.json"
     perfil = json.loads(perfil_arq.read_text(encoding="utf-8"))
     sobre = [PY, "-I", SOBRE, "--perfil", perfil_arq]
+    for it in r["itens"]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", it["id"]):
+            sys.exit(f"id do YouTube inválido: {it['id']!r}")
     nome = Path(r["saida"]).stem
     tmp = RAIZ / "montagem" / nome
     tmp.mkdir(parents=True, exist_ok=True)
@@ -139,7 +142,9 @@ def main(roteiro_path):
                "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart", parte])
         print(f"  {n + 1}/{len(arquivos)} ok")
 
-    saida = RAIZ / r["saida"]
+    saida = (RAIZ / r["saida"]).resolve()
+    if not saida.is_relative_to(RAIZ.resolve()):
+        sys.exit(f"saida fora da pasta do projeto: {r['saida']}")
     if r.get("separados"):
         saida.mkdir(parents=True, exist_ok=True)
         for n, (it, p) in enumerate(zip(r["itens"], partes), 1):
@@ -150,7 +155,8 @@ def main(roteiro_path):
         return
 
     lista = tmp / "lista.txt"
-    lista.write_text("".join(f"file '{p}'\n" for p in partes), encoding="utf-8")
+    # aspas simples no caminho quebrariam a lista do concat; escape do próprio ffmpeg
+    lista.write_text("".join("file '" + str(p).replace("'", "'\\''") + "'\n" for p in partes), encoding="utf-8")
     saida.parent.mkdir(parents=True, exist_ok=True)
     rodar(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", lista,
            "-c", "copy", "-movflags", "+faststart", saida])
