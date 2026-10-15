@@ -1,6 +1,8 @@
 """Monta o vídeo final a partir de um roteiro JSON. Rodar DE DENTRO da pasta do projeto.
 
-Uso: <venv>/bin/python -I <skill>/scripts/montar.py roteiros/<nome>.json
+Uso: <python da skill> -I <pasta da skill>/scripts/montar.py roteiros/<nome>.json [--cru]
+     --cru: versão bruta para editor - sem countdown, tarja e QR, e com o selo gravado no canto
+     superior direito da fonte do YouTube apagado (delogo). Grava brutos/<nome>.mp4.
 
 Roteiro (formato completo em references/roteiro.md):
 {
@@ -9,8 +11,11 @@ Roteiro (formato completo em references/roteiro.md):
   "countdown": "Voltamos em",            # opcional; null = sem relógio (cortes avulsos)
   "qr": {"url": "...", "legenda": "Ficha de interesse"},   # opcional
   "separados": false,                    # true = não junta; solta cada corte como arquivo
-  "itens": [{"id": "BX-3C2OX7FU", "ini": "53:01", "fim": "60:25", "tarja": "...", "rotulo": "...", "nome": "..."}]
+  "delogo": [1112, 4, 164, 152],         # opcional; caixa x,y,w,h (em 1280x720) apagada no --cru
+  "itens": [{"id": "BX-3C2OX7FU", "ini": "53:01", "fim": "60:25", "tarja": "...", "rotulo": "...", "nome": "..."},
+            {"arquivo": "novos/DEP-0001.mp4", "tarja": "...", "nome": "Aline"}]   # vídeo local (inteiro)
 }
+Vídeo vertical entra centralizado sobre um fundo desfocado dele mesmo.
 
 Etapas: baixa cada trecho (cache em trechos/), mede a duração real, gera o countdown do total
 e codifica cada trecho UMA vez já com tarja + fatia do countdown + QR; no fim junta sem recodificar.
@@ -23,20 +28,23 @@ RAIZ = Path.cwd()
 PY = sys.executable
 SOBRE = SKILL / "scripts/sobreposicoes.py"
 TARJA_SEG = (2, 14)  # tarja aparece do segundo 2 ao 14 de cada trecho
+DELOGO = (1112, 4, 164, 152)  # selo "COMU | RT"/StreamYard das lives da Mari, em 1280x720
 
 
 def achar_ytdlp():
-    for c in (os.environ.get("YTDLP"), Path(PY).parent / "yt-dlp", RAIZ / "tools/venv/bin/yt-dlp"):
+    exe = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"  # no Windows o venv usa Scripts/, não bin/
+    for c in (os.environ.get("YTDLP"), Path(PY).parent / exe,
+              RAIZ / "tools/venv/bin" / exe, RAIZ / "tools/venv/Scripts" / exe):
         if c and Path(c).exists():
             return str(c)
     c = shutil.which("yt-dlp")
     if not c:
-        sys.exit("yt-dlp não encontrado: rode scripts/preparar.sh ou defina YTDLP=")
+        sys.exit("yt-dlp não encontrado: rode scripts/preparar.py ou defina YTDLP=")
     return c
 
 
 def encoder():
-    """h264_videotoolbox (Mac) é ~5x mais rápido que libx264; fora do Mac, libx264."""
+    """h264_videotoolbox (Mac) é ~5x mais rápido que libx264; no Windows/Linux, libx264."""
     enc = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
     if "h264_videotoolbox" in enc:
         return ["-c:v", "h264_videotoolbox", "-b:v", "4500k", "-maxrate", "6M", "-bufsize", "9M"]
@@ -58,7 +66,39 @@ def duracao(arq):
     return float(out)
 
 
+def validar(itens):
+    for it in itens:
+        if it.get("arquivo"):
+            arq = (RAIZ / it["arquivo"]).resolve()
+            if not arq.is_relative_to(RAIZ.resolve()) or not arq.is_file():
+                sys.exit(f"arquivo local inválido ou fora da pasta do projeto: {it['arquivo']!r}")
+        elif not re.fullmatch(r"[A-Za-z0-9_-]{11}", it.get("id", "")):
+            sys.exit(f"id do YouTube inválido: {it.get('id')!r}")
+
+
+def dimensoes(arq):
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0", str(arq)], capture_output=True, text=True, check=True).stdout
+    w, h = out.strip().split(",")[:2]
+    return int(w), int(h)
+
+
+def filtro_base(arq, delogo=None):
+    """Leva qualquer fonte para 1280x720/30fps. Vertical: centralizado sobre fundo desfocado."""
+    w, h = dimensoes(arq)
+    if h > w:
+        f = ("[0:v]split[fg0][bg0];[bg0]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,"
+             "gblur=sigma=40,eq=brightness=-0.12[bg];[fg0]scale=-2:720[fg];[bg][fg]overlay=(W-w)/2:0")
+    else:
+        f = "[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2"
+    if delogo:
+        f += ",delogo=x={}:y={}:w={}:h={}".format(*delogo)
+    return f + ",setsar=1,fps=30,format=yuv420p[v1]"
+
+
 def baixar(item, ytdlp=None):
+    if item.get("arquivo"):
+        return RAIZ / item["arquivo"]
     ini, fim = item["ini"].replace(":", ""), item["fim"].replace(":", "")
     arq = RAIZ / "trechos" / f"{item['id']}_{ini}-{fim}.mp4"
     if not arq.exists():
@@ -77,19 +117,21 @@ def baixar(item, ytdlp=None):
     return arq
 
 
-def main(roteiro_path):
+def main(roteiro_path, cru=False):
     r = json.loads(Path(roteiro_path).read_text(encoding="utf-8"))
+    if cru:  # versão para editor: sem nenhuma camada nossa
+        r = {**r, "countdown": None, "qr": None, "separados": False,
+             "saida": str(Path("brutos") / (Path(r["saida"]).stem + ".mp4")),
+             "itens": [{k: v for k, v in it.items() if k != "tarja"} for it in r["itens"]]}
     perfil_arq = Path(r["perfil"]) if r.get("perfil") else SKILL / "perfis/mari.json"
     perfil = json.loads(perfil_arq.read_text(encoding="utf-8"))
     sobre = [PY, "-I", SOBRE, "--perfil", perfil_arq]
-    for it in r["itens"]:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", it["id"]):
-            sys.exit(f"id do YouTube inválido: {it['id']!r}")
+    validar(r["itens"])
     nome = Path(r["saida"]).stem
-    tmp = RAIZ / "montagem" / nome
+    tmp = RAIZ / "montagem" / (nome + ("-cru" if cru else ""))
     tmp.mkdir(parents=True, exist_ok=True)
 
-    ytdlp = achar_ytdlp()
+    ytdlp = achar_ytdlp() if any(not it.get("arquivo") for it in r["itens"]) else None
     arquivos = [baixar(it, ytdlp) for it in r["itens"]]
     durs = [duracao(a) for a in arquivos]
     total = int(round(sum(durs)))
@@ -115,8 +157,10 @@ def main(roteiro_path):
         if parte.exists():
             continue
         entradas = ["-i", arq]
-        filtro = ("[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,"
-                  "setsar=1,fps=30,format=yuv420p[v1]")
+        dl = None
+        if cru and not it.get("arquivo") and it.get("delogo", True):
+            dl = it["delogo"] if isinstance(it.get("delogo"), list) else r.get("delogo", DELOGO)
+        filtro = filtro_base(arq, dl)
         ultimo, k = "v1", 1
         if cd:
             entradas += ["-framerate", "1", "-start_number", inicio_cd, "-i", cd / "%06d.png"]
@@ -148,15 +192,15 @@ def main(roteiro_path):
     if r.get("separados"):
         saida.mkdir(parents=True, exist_ok=True)
         for n, (it, p) in enumerate(zip(r["itens"], partes), 1):
-            rotulo = it.get("nome") or it.get("tarja") or it["id"]
-            destino = saida / f"{n:02d}_{slug(rotulo)}_{it['ini'].replace(':', 'm')}s.mp4"
+            rotulo = it.get("nome") or it.get("tarja") or it.get("id") or Path(it["arquivo"]).stem
+            destino = saida / f"{n:02d}_{slug(rotulo)}_{it.get('ini', '0').replace(':', 'm')}s.mp4"
             shutil.copyfile(p, destino)
             print(f"pronto: {destino}")
         return
 
     lista = tmp / "lista.txt"
     # aspas simples no caminho quebrariam a lista do concat; escape do próprio ffmpeg
-    lista.write_text("".join("file '" + str(p).replace("'", "'\\''") + "'\n" for p in partes), encoding="utf-8")
+    lista.write_text("".join("file '" + p.as_posix().replace("'", "'\\''") + "'\n" for p in partes), encoding="utf-8")
     saida.parent.mkdir(parents=True, exist_ok=True)
     rodar(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", lista,
            "-c", "copy", "-movflags", "+faststart", saida])
@@ -164,4 +208,4 @@ def main(roteiro_path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], cru="--cru" in sys.argv[2:])

@@ -7,6 +7,8 @@
 Perfil (JSON): {"fonte": "/caminho.ttc", "fonte_index_bold": 2, "fonte_index_normal": 0,
                 "fundo": [45,23,58], "texto": [244,231,214], "destaque": [125,211,206]}
 Sem perfil, usa o perfil da Mari (perfis/mari.json).
+Fonte do perfil ausente (ex.: Futura fora do Mac): usa a Jost que vem na skill
+(assets/fontes, licença OFL, com acentos) e avisa uma vez no stderr.
 """
 import json, sys
 from pathlib import Path
@@ -23,9 +25,19 @@ def carregar_perfil(caminho):
         P[k] = tuple(P[k])
 
 
+JOST = Path(__file__).resolve().parent.parent / "assets/fontes"
+_avisou = False
+
+
 def fonte(tam, bold=True):
-    idx = P.get("fonte_index_bold", 0) if bold else P.get("fonte_index_normal", 0)
-    return ImageFont.truetype(P["fonte"], tam, index=idx)
+    global _avisou
+    if Path(P["fonte"]).exists():
+        idx = P.get("fonte_index_bold", 0) if bold else P.get("fonte_index_normal", 0)
+        return ImageFont.truetype(P["fonte"], tam, index=idx)
+    if not _avisou:
+        print(f"aviso: fonte {P['fonte']} não existe nesta máquina; usando a Jost da skill", file=sys.stderr)
+        _avisou = True
+    return ImageFont.truetype(str(JOST / ("Jost-Bold.ttf" if bold else "Jost-Regular.ttf")), tam)
 
 
 def hms(s):

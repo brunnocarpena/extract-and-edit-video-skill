@@ -23,7 +23,7 @@ Vou fazer assim:
 1. Preparar - pasta do projeto, venv (yt-dlp, Pillow, segno) e ffmpeg.
 2. Listar - puxo a playlist e separo os candidatos pelo título.  ← você confere
 3. Transcrever - legendas automáticas → texto com minutagem.
-4. Mapear - agentes leem cada transcrição e marcam corte longo, curto, tarja e nota A/B/C.  ← você aprova
+4. Mapear - leio cada transcrição em lotes e marco corte longo, curto, tarja e nota A/B/C.  ← você aprova
 5. Roteiros - distribuo os cortes A/B pelos vídeos pedidos.  ← você aprova
 6. Montar e exportar - baixo só os trechos e gero cada formato pedido (MP4, Premiere, CapCut, SRT).
 7. Conferir - assisto às emendas e às tarjas por amostragem e te entrego.
@@ -40,40 +40,46 @@ mostre o resumo do `projeto.json` e pergunte só o que mudou.
 
 ## Fluxo
 
+Vale para qualquer agente (Claude Code, Codex, Gemini CLI) e qualquer sistema (macOS, Windows,
+Linux): todo passo é um script Python, sem `bash`, `for` ou `>` do shell. Nos comandos abaixo:
+- `<skill>` = a pasta onde está este SKILL.md.
+- `<python>` = o python do venv, impresso no fim do `preparar.py`:
+  macOS/Linux `~/.cache/extract-and-edit-video/venv/bin/python`;
+  Windows `%USERPROFILE%\.cache\extract-and-edit-video\venv\Scripts\python.exe`.
+Rode tudo de dentro da pasta do projeto, com aspas em caminhos que tenham espaço.
+
 ### 1. Preparar
-```bash
-sh ~/.claude/skills/extract-and-edit-video-skill/scripts/preparar.sh   # venv em ~/.cache/extract-and-edit-video/venv
-mkdir -p dados/mapas legendas transcricoes roteiros finais
 ```
-Grave o `projeto.json` do onboarding nesta pasta.
-`V=~/.cache/extract-and-edit-video/venv/bin` e `S=~/.claude/skills/extract-and-edit-video-skill/scripts`
-nos comandos abaixo. Se o projeto já tem um venv com yt-dlp + Pillow + segno (ex.: `tools/venv`),
-use `V=tools/venv/bin` em vez de criar outro. Instalar/subir versão de dependência passa antes
-pelo `supply-chain-guard`.
+python3 <skill>/scripts/preparar.py      # Windows: py <skill>\scripts\preparar.py
+```
+Cria o venv (uma vez por máquina) e confere o ffmpeg; se faltar, mostra o comando de instalar
+daquele sistema (brew, winget, apt). Crie na pasta do projeto `dados/mapas`, `roteiros` e
+`finais` e grave ali o `projeto.json` do onboarding. Se o projeto já tem um venv com yt-dlp +
+Pillow + segno (ex.: `tools/venv`), use o python dele. Instalar/subir versão de dependência passa
+antes pela checagem de supply chain (no Claude Code desta casa: `supply-chain-guard`).
 
 ### 2. Listar candidatos
-```bash
-$V/yt-dlp --flat-playlist -J "<url da playlist>" > dados/playlist.json
 ```
-Leia os títulos e grave `dados/candidatos.txt` (um ID por linha, agrupado por tema com `#`).
-Corte pelo título o que está fora do critério. **Checkpoint:** mostre a contagem por tema e os
-excluídos; sem resposta, siga.
+<python> -m yt_dlp -q --flat-playlist --skip-download --print-to-file "%(id)s	%(title)s" dados/playlist.tsv "<url da playlist>"
+```
+(entre `%(id)s` e `%(title)s` vai um TAB). Leia os títulos e grave `dados/candidatos.txt` (um ID
+por linha, agrupado por tema com `#`). Corte pelo título o que está fora do critério.
+**Checkpoint:** mostre a contagem por tema e os excluídos; sem resposta, siga.
 
 ### 3. Transcrever
-```bash
-for id in $(grep -v '^#' dados/candidatos.txt); do
-  $V/yt-dlp -q --no-warnings --skip-download --write-auto-subs --sub-langs pt --sub-format json3 \
-    -o "legendas/%(id)s" "https://www.youtube.com/watch?v=$id"
-  $V/python -I $S/json3_para_txt.py "legendas/$id.pt.json3" > "transcricoes/$id.txt"
-done
 ```
-Rode em background e espalhe as chamadas (pausa de 2-3 s) para não levar 429.
+<python> -I <skill>/scripts/transcrever.py
+```
+Baixa a legenda automática de cada candidato e grava `transcricoes/<id>.txt` com minutagem.
+Pausa 2-3 s entre vídeos (evita 429) e é retomável. Se o seu agente roda comando em segundo
+plano, rode assim; é demorado com muitos vídeos.
 
-### 4. Mapear (agentes em paralelo)
+### 4. Mapear (em lotes)
 Copie `references/mapa.md` para `dados/INSTRUCOES-MAPA.md` e preencha o Contexto com o
 `projeto.json` (oferta, público, critério, temas fora).
-Despache agentes com lotes de ~8 IDs: cada um lê o arquivo de instruções e as transcrições
-**inteiras** e grava `dados/mapas/<id>.json`. Sem rede para os agentes.
+Divida em lotes de ~8 IDs: cada lote lê o arquivo de instruções e as transcrições **inteiras** e
+grava `dados/mapas/<id>.json`. Se o seu agente consegue despachar subagentes (no Claude Code,
+sim), rode os lotes em paralelo, sem rede; se não, faça os lotes você mesmo, um de cada vez.
 
 Depois, **revise você mesmo** antes de mostrar:
 - Tarja fiel? Releia o trecho da transcrição de cada tarja com número ou palavra forte.
@@ -93,13 +99,14 @@ durações até bater o tempo pedido. **Checkpoint:** mostre cada roteiro (ordem
 
 ### 6. Montar e exportar
 Rode o comando de cada formato do `projeto.json` (tabela em `references/onboarding.md`):
-```bash
-$V/python -I $S/prebaixar.py                                   # opcional: baixa todos os longos A/B antes
-$V/python -I $S/montar.py roteiros/<nome>.json                 # MP4 final (ou avulsos, com separados)
-$V/python -I $S/exportar.py roteiros/<nome>.json premiere,srt  # Premiere/DaVinci: XML + clipes + tarjas
-$V/python -I $S/exportar.py roteiros/<nome>.json capcut        # CapCut/outro: clipes numerados + tarjas + SRT
 ```
-Rode em background (um intervalo de 70 min leva ~10-20 min no Mac). É retomável, e os dois
+<python> -I <skill>/scripts/prebaixar.py                                   # opcional: baixa todos os longos A/B antes
+<python> -I <skill>/scripts/montar.py roteiros/<nome>.json                 # MP4 final (ou avulsos, com separados)
+<python> -I <skill>/scripts/exportar.py roteiros/<nome>.json premiere,srt  # Premiere/DaVinci: XML + clipes + tarjas
+<python> -I <skill>/scripts/exportar.py roteiros/<nome>.json capcut        # CapCut/outro: clipes numerados + tarjas + SRT
+```
+Rode em segundo plano se puder (um intervalo de 70 min leva ~10-20 min num Mac com
+`h264_videotoolbox`; no Windows/Linux, com libx264, conte com mais). É retomável, e os dois
 scripts reaproveitam os mesmos `trechos/`. O `exportar.py` grava em `editor/<nome>/` com um
 `LEIA-ME.txt` que explica como abrir em cada programa; entregue a pasta inteira (o XML aponta
 para os arquivos dela pelo caminho absoluto).
@@ -107,7 +114,8 @@ para os arquivos dela pelo caminho absoluto).
 ### 7. Conferir e entregar
 - `ffprobe` na duração final; extraia 3-4 frames (`ffmpeg -ss <t> -frames:v 1`) em emendas e
   tarjas para checar sobreposição e texto.
-- Entregue com `open -R <arquivo>` e o caminho absoluto em texto.
+- Entregue abrindo a pasta para o usuário - macOS `open -R "<arquivo>"`, Windows
+  `explorer /select,"<arquivo>"`, Linux `xdg-open "<pasta>"` - e com o caminho absoluto em texto.
 - Feche com a lista de pendências pronta para WhatsApp (bloco de código), revisando antes o que
   já foi resolvido.
 
@@ -116,13 +124,19 @@ para os arquivos dela pelo caminho absoluto).
 - **Legenda `pt-PT` dá 429**; `--sub-langs pt` (automática) funciona.
 - **yt-dlp falha à toa** às vezes: o `montar.py` já tenta 3 vezes com 10 s de pausa.
 - **ffmpeg sem drawtext/libass** nesta máquina: por isso as sobreposições são PNG (Pillow).
-- **libx264 lento**: o `montar.py` usa `h264_videotoolbox` quando existe.
+- **libx264 lento**: o `montar.py` usa `h264_videotoolbox` quando existe (Mac); no Windows/Linux
+  cai no libx264 `veryfast`.
+- **`>` do PowerShell grava em UTF-16** e estraga JSON e acentos: por isso a lista sai por
+  `--print-to-file` e a transcrição pelo `transcrever.py`, que gravam UTF-8 direto.
+- **Fonte do perfil só existe num sistema** (a Futura da Mari é do Mac): fora dele o
+  `sobreposicoes.py` usa a Jost de `assets/fontes` e avisa. Perfil novo pode apontar para um
+  `.ttf` dentro da pasta do projeto, que vale em qualquer sistema.
 - **Mapa pode ser lista** (2 cortes no mesmo episódio): quem lê mapa trata os dois formatos.
 - **Importação no Premiere/DaVinci/CapCut ainda não foi testada num editor de verdade** (nenhum
   instalado nesta máquina): o XML passa no parser e os tempos conferem. No primeiro uso real, peça
   para quem edita confirmar e anote aqui o que precisou ajustar.
-- **XML com caminho absoluto**: mover a pasta `editor/<nome>/` para outro Mac faz o Premiere pedir
-  para religar a mídia (aponte para `clipes/` e ele acha o resto).
+- **XML com caminho absoluto**: mover a pasta `editor/<nome>/` para outro computador faz o
+  Premiere/DaVinci pedir para religar a mídia (aponte para `clipes/` e ele acha o resto).
 - **Tarja errada** passa fácil: "Materializou 630 mil" era o preço do apartamento.
 - **Fim do corte** vazando para tema proibido: o da tireoide teve de acabar em 40:10, antes de
   "foi a bruxa" - só se acha olhando os tempos por palavra do json3.
@@ -130,14 +144,22 @@ para os arquivos dela pelo caminho absoluto).
 - **Menor de idade** no trecho precisa de autorização antes de usar.
 - **Cache de montagem**: mudou tarja/perfil/QR, apague `montagem/<nome>/`, senão reaproveita a
   parte antiga.
-- **Vídeo privado/Hotmart** não baixa sem login: passo manual pelo Brave (perfil `Default`),
-  nunca matando o navegador do usuário.
+- **Selo da live gravado no vídeo** (COMU | RT, StreamYard): fica no canto superior direito
+  dos episódios; a versão bruta borra com `delogo`. Fonte nova com selo em outro lugar: ajuste
+  `delogo` no roteiro e confira um frame do `brutos/`.
+- **CapCut não importa XML**: o pacote dele é clipes + tarjas + camadas + `TEMPOS.csv`, montado à mão.
+- **Countdown em ProRes 4444 passa de 10 GB** num almoço de 2 h; o `exportar.py` usa QuickTime
+  Animation (qtrle), que fica em dezenas de MB.
+- **openpyxl não está no venv**: planilha .xlsx simples dá para gerar com `zipfile` puro.
+- **Vídeo privado/Hotmart** não baixa sem login: passo manual no navegador do usuário, nunca
+  matando o navegador dele.
 
 ## Arquivos desta skill
 | Arquivo | Quando ler/usar |
 |---|---|
-| `scripts/preparar.sh` | Passo 1, uma vez por máquina |
-| `scripts/json3_para_txt.py` | Passo 3: json3 → texto `[mm:ss]` em blocos de ~15 s |
+| `scripts/preparar.py` | Passo 1, uma vez por máquina (macOS, Windows, Linux) |
+| `scripts/transcrever.py` | Passo 3: legendas de `dados/candidatos.txt` → `transcricoes/` |
+| `scripts/json3_para_txt.py` | Chamado pelo `transcrever.py`: json3 → texto `[mm:ss]` em blocos de ~15 s |
 | `references/mapa.md` | Passo 4: modelo das instruções para os agentes |
 | `scripts/prebaixar.py` | Passo 6, opcional: baixa os longos A/B dos mapas |
 | `scripts/montar.py` | Passo 6: monta o vídeo (ou os cortes avulsos) a partir do roteiro |
@@ -146,4 +168,5 @@ para os arquivos dela pelo caminho absoluto).
 | `scripts/sobreposicoes.py` | Chamado pelo `montar.py` e pelo `exportar.py` (countdown, tarja, QR em PNG) |
 | `references/roteiro.md` | Passo 5: formato do roteiro e receitas |
 | `perfis/mari.json` | Perfil visual padrão; copie e ajuste para outro cliente |
+| `assets/fontes/` | Jost (OFL), fonte reserva quando a do perfil não existe na máquina |
 | `references/perfil-mari.md` | Exemplo real: critérios, visual e números da IDE |

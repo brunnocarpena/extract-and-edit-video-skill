@@ -1,5 +1,5 @@
 """Baixa para trechos/ os cortes longos (A e B) já mapeados, para a montagem não esperar download.
-Rodar DE DENTRO da pasta do projeto: <venv>/bin/python -I <skill>/scripts/prebaixar.py"""
+Rodar DE DENTRO da pasta do projeto: <python da skill> -I <pasta da skill>/scripts/prebaixar.py"""
 import glob, json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # -I tira a pasta do script do path

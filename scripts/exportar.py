@@ -1,14 +1,19 @@
 """Exporta um roteiro para edição em outro programa. Rodar DE DENTRO da pasta do projeto.
 
-Uso: <venv>/bin/python -I <skill>/scripts/exportar.py roteiros/<nome>.json [premiere,capcut,srt]
+Uso: <python da skill> -I <pasta da skill>/scripts/exportar.py roteiros/<nome>.json [premiere,capcut,srt]
      (sem a lista: os três)
 
 Gera editor/<nome>/ com:
-  clipes/NN_<slug>.mp4   trecho bruto, sem tarja/countdown/QR (cache de trechos/, baixa o que faltar)
+  clipes/NN_<slug>.mp4   trecho bruto em 1280x720, sem tarja/countdown/QR e sem o selo da live
+                         (vem do montar.py --cru, que também grava brutos/<nome>.mp4)
   tarjas/NN.png          tarja do perfil em quadro 1280x720 transparente, já na posição
+  camadas/countdown.mov  (se o roteiro tem countdown) relógio com alfa, codec Animation, quadro cheio
+  camadas/countdown-chroma.mp4  o mesmo relógio sobre verde, para editor sem alfa (chroma key)
+  camadas/qr.png         (se o roteiro tem qr) QR em quadro 1280x720 transparente
   legendas/NN_<slug>.srt legenda de cada clipe, a partir de legendas/<id>.pt.json3 (se existir)
   <nome>.srt             legenda da sequência inteira, na ordem do roteiro
-  <nome>.xml             (premiere) XML FCP7/xmeml: V1 clipes em fila, V2 tarjas do seg. 2 ao 14, A1 áudio.
+  <nome>.xml             (premiere) XML FCP7/xmeml: V1 clipes em fila, V2 tarjas do seg. 2 ao 14,
+                         V3 countdown, V4 QR, A1 áudio.
                          Abre no Premiere e no DaVinci Resolve (Arquivo > Importar).
   LEIA-ME.txt            como abrir em cada editor
 
@@ -18,7 +23,8 @@ import json, re, shutil, subprocess, sys, urllib.parse
 from pathlib import Path
 from xml.sax.saxutils import escape
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # -I tira a pasta do script do path
-from montar import RAIZ, PY, SOBRE, SKILL, TARJA_SEG, achar_ytdlp, baixar, slug, rodar
+import montar
+from montar import RAIZ, PY, SOBRE, SKILL, TARJA_SEG, slug, rodar, validar
 
 FPS, W, H = 30, 1280, 720
 
@@ -81,26 +87,23 @@ def escrever_srt(cues, arq):
 
 def main(roteiro_path, formatos):
     r = json.loads(Path(roteiro_path).read_text(encoding="utf-8"))
-    for it in r["itens"]:
-        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", it["id"]):
-            sys.exit(f"id do YouTube inválido: {it['id']!r}")
+    validar(r["itens"])
     perfil_arq = Path(r["perfil"]) if r.get("perfil") else SKILL / "perfis/mari.json"
     perfil = json.loads(perfil_arq.read_text(encoding="utf-8"))
     nome = Path(r["saida"]).stem
     if not re.fullmatch(r"[\w.-]+", nome) or set(nome) == {"."}:
         sys.exit(f"saida com nome inválido: {r['saida']}")
     out = RAIZ / "editor" / nome
-    for sub in ("clipes", "tarjas", "legendas"):
+    for sub in ("clipes", "tarjas", "legendas", "camadas"):
         (out / sub).mkdir(parents=True, exist_ok=True)
 
-    ytdlp = achar_ytdlp()
+    montar.main(roteiro_path, cru=True)  # partes cruas em montagem/<nome>-cru/NNN.mp4
     itens = []
     for n, it in enumerate(r["itens"], 1):
-        bruto = baixar(it, ytdlp)
-        base = f"{n:02d}_{slug(it.get('nome') or it.get('tarja') or it['id'])}"
+        base = f"{n:02d}_{slug(it.get('nome') or it.get('tarja') or it.get('id') or Path(it['arquivo']).stem)}"
         clipe = out / "clipes" / f"{base}.mp4"
         if not clipe.exists():
-            shutil.copyfile(bruto, clipe)
+            shutil.copyfile(RAIZ / "montagem" / f"{nome}-cru" / f"{n - 1:03d}.mp4", clipe)
         info = probe(clipe)
         tarja = None
         if it.get("tarja"):
@@ -119,7 +122,7 @@ def main(roteiro_path, formatos):
     if "srt" in formatos or "capcut" in formatos:
         todas, desloc = [], 0
         for x in itens:
-            j3 = RAIZ / "legendas" / f"{x['it']['id']}.pt.json3"
+            j3 = RAIZ / "legendas" / f"{x['it'].get('id')}.pt.json3"
             dur_ms = int(x["info"]["dur"] * 1000)
             if j3.exists():
                 ini = int(seg(x["it"]["ini"]) * 1000)
@@ -127,14 +130,40 @@ def main(roteiro_path, formatos):
                 escrever_srt(legendas(ps, ini, ini + dur_ms), out / "legendas" / f"{x['base']}.srt")
                 todas += legendas(ps, ini, ini + dur_ms, desloc)
             else:
-                print(f"  sem legendas/{x['it']['id']}.pt.json3: clipe {x['base']} fica sem SRT")
+                print(f"  sem legenda automática para {x['base']}: clipe fica sem SRT")
             desloc += dur_ms
         if todas:
             escrever_srt(todas, out / f"{nome}.srt")
 
+    total_fr = sum(int(round(x["info"]["dur"] * FPS)) for x in itens)
+    cd_mov = out / "camadas" / "countdown.mov"
+    if r.get("countdown") and not cd_mov.exists():
+        pngs = out / "camadas" / "_countdown_png"
+        total = -(-total_fr // FPS)
+        rodar([PY, "-I", SOBRE, "--perfil", perfil_arq, "countdown", total, r["countdown"], pngs])
+        base_cd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-framerate", "1", "-start_number", "0",
+                   "-i", pngs / "%06d.png", "-frames:v", total_fr]
+        quadro = f"fps={FPS},format=rgba,pad={W}:{H}:(ow-iw)/2:24:color=black@0"
+        # Animation (qtrle) com GOP longo: alfa e ~30 MB/hora, porque o quadro quase não muda
+        rodar(base_cd + ["-vf", quadro, "-c:v", "qtrle", "-g", "300", "-pix_fmt", "argb", cd_mov])
+        rodar(base_cd + ["-vf", f"fps={FPS},pad={W}:{H}:(ow-iw)/2:24:color=0x00FF00,format=yuv420p",
+                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-tune", "stillimage",
+                         out / "camadas" / "countdown-chroma.mp4"])
+        shutil.rmtree(pngs)
+    qr_png = out / "camadas" / "qr.png"
+    if r.get("qr") and not qr_png.exists():
+        rodar([PY, "-I", SOBRE, "--perfil", perfil_arq, "qr", r["qr"]["url"],
+               r["qr"].get("legenda", "Ficha de interesse"), qr_png])
+        from PIL import Image
+        t = Image.open(qr_png)
+        q = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        q.paste(t, (W - t.width - 32, H - t.height - 92), t)
+        q.save(qr_png)
+
     if "premiere" in formatos:
         rate = f"<rate><timebase>{FPS}</timebase><ntsc>FALSE</ntsc></rate>"
-        url = lambda p: "file://localhost" + urllib.parse.quote(str(Path(p).resolve()))
+        # file://localhost/Users/... no Mac/Linux e file://localhost/C:/Users/... no Windows
+        url = lambda p: "file://localhost" + urllib.parse.quote("/" + Path(p).resolve().as_posix().lstrip("/"), safe="/:")
         v1, v2, a1, pos = [], [], [], 0
         for n, x in enumerate(itens, 1):
             fr = int(round(x["info"]["dur"] * FPS))
@@ -160,26 +189,53 @@ def main(roteiro_path, formatos):
                           f"<duration>{fim - ini}</duration>{rate}<start>{ini}</start><end>{fim}</end>"
                           f"<in>0</in><out>{fim - ini}</out>{txml}</clipitem>")
             pos += fr
+        camada = lambda cid, nome_c, arq, fr_arq: (
+            f'<track><clipitem id="{cid}"><name>{nome_c}</name><enabled>TRUE</enabled><duration>{fr_arq}</duration>'
+            f"{rate}<start>0</start><end>{pos}</end><in>0</in><out>{pos}</out>"
+            f'<file id="{cid}-f"><name>{arq.name}</name><pathurl>{url(arq)}</pathurl>{rate}<duration>{fr_arq}'
+            f"</duration><media><video><samplecharacteristics><width>{W}</width><height>{H}</height>"
+            f"</samplecharacteristics></video></media></file></clipitem></track>")
+        extra = ""
+        if cd_mov.exists():
+            extra += camada("countdown", "countdown", cd_mov, pos)
+        if qr_png.exists():
+            extra += camada("qr", "QR", qr_png, pos)
         xml = (f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE xmeml>\n<xmeml version="4"><sequence id="seq-1">'
                f"<name>{escape(nome)}</name><duration>{pos}</duration>{rate}<media><video><format>"
                f"<samplecharacteristics>{rate}<width>{W}</width><height>{H}</height>"
                f"<pixelaspectratio>square</pixelaspectratio></samplecharacteristics></format>"
-               f"<track>{''.join(v1)}</track><track>{''.join(v2)}</track></video>"
+               f"<track>{''.join(v1)}</track><track>{''.join(v2)}</track>{extra}</video>"
                f"<audio><track>{''.join(a1)}</track></audio></media></sequence></xmeml>\n")
         (out / f"{nome}.xml").write_text(xml, encoding="utf-8")
 
+    linhas, t = ["ordem;arquivo;entra_em;sai_em;duracao;tarja_de;tarja_ate;tarja"], 0.0
+    hms = lambda s: f"{int(s // 3600)}:{int(s % 3600 // 60):02d}:{s % 60:05.2f}"
+    for n, x in enumerate(itens, 1):
+        d = x["info"]["dur"]
+        a, b = TARJA_SEG
+        linhas.append(f"{n};{x['clipe'].name};{hms(t)};{hms(t + d)};{hms(d)};"
+                      + (f"{hms(t + a)};{hms(t + min(b, d))};{x['it']['tarja']}" if x["tarja"] else ";;"))
+        t += d
+    (out / "TEMPOS.csv").write_text("\n".join(linhas) + "\n", encoding="utf-8-sig")
+
     (out / "LEIA-ME.txt").write_text(f"""Pacote de edição: {nome}
 Mantenha esta pasta inteira junta: o XML aponta para os arquivos de clipes/ e tarjas/.
+Abriu em outro computador (Mac, Windows ou Linux)? O Premiere/DaVinci vai pedir para religar
+a mídia: aponte para o primeiro arquivo de clipes/ e ele acha o resto.
 
 Premiere Pro: Arquivo > Importar > {nome}.xml. Abre a sequência com os clipes em ordem (V1),
-  as tarjas por cima (V2, do segundo {TARJA_SEG[0]} ao {TARJA_SEG[1]} de cada clipe) e o áudio (A1).
+  as tarjas por cima (V2, do segundo {TARJA_SEG[0]} ao {TARJA_SEG[1]} de cada clipe), o countdown (V3,
+  se houver), o QR (V4, se houver) e o áudio (A1). Cada camada pode ser desligada no olho da trilha.
   Legenda: Arquivo > Importar > {nome}.srt e arraste para a timeline.
 DaVinci Resolve: File > Import > Timeline > {nome}.xml (mesmo XML do Premiere).
-CapCut: arraste os arquivos de clipes/ na ordem dos números; as tarjas de tarjas/ vão numa
-  camada por cima. Legenda: arquivos .srt de legendas/ (um por clipe) ou {nome}.srt (sequência toda).
+CapCut: o CapCut não importa projeto de outro programa, então a montagem é manual:
+  arraste os arquivos de clipes/ na ordem dos números na trilha principal; as tarjas de tarjas/
+  numa camada por cima (do segundo {TARJA_SEG[0]} ao {TARJA_SEG[1]} de cada clipe - os tempos estão em TEMPOS.csv);
+  o countdown: camadas/countdown.mov (com transparência) ou, se o CapCut não mostrar o fundo
+  transparente, camadas/countdown-chroma.mp4 com Recortar > Chroma key no verde; o QR: camadas/qr.png. Legenda: arquivos .srt de legendas/ (um por clipe) ou {nome}.srt (sequência toda).
 Outro editor (Final Cut, iMovie...): mesma lógica do CapCut.
 
-Os clipes são brutos (sem tarja, countdown ou QR). A legenda vem da legenda automática do
+Os clipes são brutos: sem tarja, countdown ou QR, e sem o selo da live no canto superior direito. A legenda vem da legenda automática do
 YouTube: revise nomes próprios e números antes de publicar.
 """, encoding="utf-8")
     print(f"pronto: {out}")

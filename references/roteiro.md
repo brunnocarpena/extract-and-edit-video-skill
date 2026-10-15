@@ -22,8 +22,11 @@
 | `countdown` | não | Rótulo do relógio regressivo no topo, contando o total do vídeo. `null` ou ausente = sem relógio. |
 | `qr` | não | QR fixo no canto inferior direito, durante o vídeo todo. |
 | `separados` | não | `true` = um mp4 por item (cortes avulsos para anúncio/Reels), sem juntar. |
-| `itens[].id` | sim | ID do vídeo do YouTube. |
-| `itens[].ini`/`fim` | sim | `mm:ss` ou `h:mm:ss`. |
+| `delogo` | não | Caixa `[x, y, l, a]` (em 1280x720) borrada só na versão bruta (`--cru`). Padrão: selo da live no canto superior direito (`1112, 4, 164, 152`). `false` desliga. |
+| `itens[].id` | um dos dois | ID do vídeo do YouTube. |
+| `itens[].arquivo` | um dos dois | Vídeo local, caminho relativo à pasta do projeto (ex.: `novos/DEP-0001.mp4`). Entra inteiro; vertical vira centralizado sobre fundo desfocado. |
+| `itens[].ini`/`fim` | só com `id` | `mm:ss` ou `h:mm:ss`. |
+| `itens[].delogo` | não | `false` (não borra este item) ou caixa própria `[x, y, l, a]`. Item `arquivo` nunca é borrado. |
 | `itens[].tarja` | não | Frase da tarja (máx. 42 caracteres), visível do segundo 2 ao 14. |
 | `itens[].rotulo` | não | Linha pequena acima da tarja. Padrão: `rotulo_tarja` do perfil. |
 | `itens[].nome` | não | Usado no nome do arquivo quando `separados`. |
@@ -37,17 +40,29 @@
   com legenda palavra a palavra é trabalho da skill `enhanced-video` em cima destes arquivos.
 
 ## Montar
-```bash
-cd <pasta do projeto>
-~/.cache/extract-and-edit-video/venv/bin/python -I ~/.claude/skills/extract-and-edit-video-skill/scripts/montar.py roteiros/<nome>.json
+De dentro da pasta do projeto (`<python>` e `<skill>` como no SKILL.md):
+```
+<python> -I <skill>/scripts/montar.py roteiros/<nome>.json
 ```
 É retomável: trechos baixados ficam em `trechos/`, partes já codificadas em `montagem/<nome>/`.
 Mudou tarja/QR/perfil? Apague `montagem/<nome>/` antes de rodar de novo.
 
-## Exportar para outro editor
-```bash
-~/.cache/extract-and-edit-video/venv/bin/python -I ~/.claude/skills/extract-and-edit-video-skill/scripts/exportar.py roteiros/<nome>.json premiere,capcut,srt
+## Versão bruta (sem logo e sem countdown)
 ```
-Usa o mesmo roteiro e os mesmos `trechos/`. Grava `editor/<nome>/`: clipes brutos numerados,
-tarjas em PNG 1280x720 já na posição, SRT por clipe e da sequência, `<nome>.xml` (Premiere e
-DaVinci) e `LEIA-ME.txt`. Countdown e QR não vão no pacote: quem edita coloca se quiser.
+<python> -I <skill>/scripts/montar.py roteiros/<nome>.json --cru
+```
+Grava `brutos/<nome>.mp4`: sem countdown, QR e tarjas, com o selo da live borrado (`delogo`).
+Cache próprio em `montagem/<nome>-cru/`.
+
+## Exportar para outro editor
+```
+<python> -I <skill>/scripts/exportar.py roteiros/<nome>.json premiere,capcut,srt
+```
+Usa o mesmo roteiro e os mesmos `trechos/` (e roda o `--cru` por baixo). Grava `editor/<nome>/`:
+- `clipes/` numerados, sem logo, countdown nem tarja;
+- `tarjas/` em PNG 1280x720 já na posição;
+- `camadas/countdown.mov` (QuickTime Animation com transparência, vídeo inteiro),
+  `camadas/countdown-chroma.mp4` (mesmo relógio sobre verde, para editor sem alfa) e `camadas/qr.png`;
+- `<nome>.xml` (Premiere e DaVinci): V1 clipes, V2 tarjas, V3 countdown, V4 QR;
+- `TEMPOS.csv` (onde cada clipe e tarja entra, para montar à mão no CapCut);
+- SRT por clipe e da sequência, e `LEIA-ME.txt`.
