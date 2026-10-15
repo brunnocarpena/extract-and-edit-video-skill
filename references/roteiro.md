@@ -43,3 +43,11 @@ cd <pasta do projeto>
 ```
 É retomável: trechos baixados ficam em `trechos/`, partes já codificadas em `montagem/<nome>/`.
 Mudou tarja/QR/perfil? Apague `montagem/<nome>/` antes de rodar de novo.
+
+## Exportar para outro editor
+```bash
+~/.cache/extract-and-edit-video/venv/bin/python -I ~/.claude/skills/extract-and-edit-video-skill/scripts/exportar.py roteiros/<nome>.json premiere,capcut,srt
+```
+Usa o mesmo roteiro e os mesmos `trechos/`. Grava `editor/<nome>/`: clipes brutos numerados,
+tarjas em PNG 1280x720 já na posição, SRT por clipe e da sequência, `<nome>.xml` (Premiere e
+DaVinci) e `LEIA-ME.txt`. Countdown e QR não vão no pacote: quem edita coloca se quiser.
