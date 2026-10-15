@@ -16,9 +16,6 @@ Nasceu dos intervalos do evento IDE da Mari Tortella (out/2026).
 
 ## Instalar
 
-O repositório é privado: antes, peça acesso e faça login no GitHub no terminal
-(`gh auth login`, ou o Git pede usuário e token na primeira vez).
-
 ### 1. Programas (uma vez por computador)
 
 | Sistema | Python 3.11+ | ffmpeg | Git |
