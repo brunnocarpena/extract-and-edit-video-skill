@@ -1,0 +1,11 @@
+{
+  "nome": "Mari Tortella / Radiestesia Terapêutica",
+  "fonte": "/System/Library/Fonts/Supplemental/Futura.ttc",
+  "fonte_index_bold": 2,
+  "fonte_index_normal": 0,
+  "fundo": [45, 23, 58],
+  "texto": [244, 231, 214],
+  "destaque": [125, 211, 206],
+  "rotulo_tarja": "Resultado real com a RT",
+  "countdown": "Voltamos em"
+}
